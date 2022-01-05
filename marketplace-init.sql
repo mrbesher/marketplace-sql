@@ -1,3 +1,62 @@
+/* TRIGGER PROCs */
+create or replace function is_occupied_proc ()
+    returns trigger
+    as $$
+begin
+    if old.seller_id is not null then
+        raise exception 'location is already occupied';
+        return old;
+    else
+        return new;
+    end if;
+end;
+$$
+language 'plpgsql';
+
+create or replace function pos_quantity_proc ()
+    returns trigger
+    as $$
+begin
+    if old.quantity < 0 then
+        raise exception 'quantity cannot be negative';
+        return old;
+    else
+        return new;
+    end if;
+end;
+$$
+language 'plpgsql';
+
+
+/* TRIGGERS */
+create or replace trigger is_occupied
+    before update on location for each row
+    execute procedure is_occupied_proc ();
+
+create or replace trigger pos_quantity
+    before update on stock for each row
+    execute procedure pos_quantity_proc ();
+
+
+/* TYPES - RECORDS */
+do $$
+begin
+    if not exists (
+        select
+            1
+        from
+            pg_type
+        where
+            typname = 'standrecord') then
+    create type standrecord as (
+        nmemb int,
+        new_stand int
+);
+end if;
+end
+$$;
+
+
 /* SEQUENCES */
 create sequence if not exists productid_seq;
 
@@ -63,10 +122,10 @@ begin
         insert into location (id, seller_id)
             values (loc.generate_series, null);
     end loop;
-exception
-    when others then
-        return;
-end;
+    exception
+        when others then
+            return;
+    end;
 
 $$
 language 'plpgsql';
@@ -131,17 +190,16 @@ create or replace function add_user (username varchar(200), password varchar(200
     returns int
     as $$
 declare
-    next_sid int;
-    satis int;
+    stand standrecord;
 begin
-    next_sid := nextval('sellerid_seq');
+    stand.new_stand := nextval('sellerid_seq');
     insert into seller (id, seller_name, seller_surname)
-        values (next_sid, fname, surname);
+        values (stand.new_stand, fname, surname);
     insert into market_user (id, password, seller_id)
-        values (username, password, next_sid);
+        values (username, password, stand.new_stand);
 
     /* add user to location */
-    satis := (
+    stand.nmemb := (
         select
             count(*)
         from
@@ -149,14 +207,14 @@ begin
         where
             id = loc
             and seller_id is null);
-    if satis < 1 then
+    if stand.nmemb < 1 then
         raise exception 'LOCATION OCCUPIED --> %', loc
             using HINT = 'Please try another location';
         end if;
         update
             location
         set
-            seller_id = next_sid
+            seller_id = stand.new_stand
         where
             id = loc
             and seller_id is null;
@@ -164,7 +222,7 @@ begin
 exception
     when others then
         perform
-            setval('sellerid_seq', next_sid, false);
+            setval('sellerid_seq', stand.new_stand, false);
     return - 1;
 end;
 
