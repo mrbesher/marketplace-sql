@@ -3,6 +3,8 @@ create sequence if not exists productid_seq;
 
 create sequence if not exists sellerid_seq;
 
+create sequence if not exists saleid_seq;
+
 
 /* TABLES */
 create table if not exists seller (
@@ -33,7 +35,7 @@ create table if not exists stock (
     seller_id int references seller (id) on delete cascade,
     product_id int references product (id) on delete cascade,
     quantity int not null,
-    price int not null,
+    price real not null,
     constraint pk_stock primary key (product_id, seller_id),
     check (price > 0),
     check (quantity > - 1)
@@ -59,9 +61,13 @@ declare
 begin
     for loc in loc_cur loop
         insert into location (id, seller_id)
-            values (loc, null);
+            values (loc.generate_series, null);
     end loop;
+exception
+    when others then
+        return;
 end;
+
 $$
 language 'plpgsql';
 
@@ -72,9 +78,22 @@ select
 
 
 /* VIEWS */
+create or replace view sellers_loc as
+select
+    s.id as sellerid,
+    s.seller_name as fname,
+    s.seller_surname as lname,
+    l.id as loc
+from
+    seller s,
+    location l
+where
+    s.id = l.seller_id;
+
+
 /* FUNCTIONS */
-/* adding entities */
-create or replace function add_product (name varchar(200), out product_id int)
+/* ==adding entities== */
+create or replace function add_product (name varchar(200), out productId int)
 as $$
 declare
     next_pid int;
@@ -82,23 +101,23 @@ begin
     next_pid := nextval('productid_seq');
     insert into product (id, product_name)
         values (next_pid, name);
-    product_id := next_pid;
+    productId := next_pid;
 exception
     when others then
         perform
             setval('productid_seq', next_pid, false);
-    product_id := - 1;
+    productId := - 1;
 end;
 
 $$
 language 'plpgsql';
 
-create or replace function add_stock (seller_id int, product_id int, quantity int, price int)
+create or replace function add_stock (sellerId int, productId int, quant int, pr real)
     returns int
     as $$
 begin
     insert into stock (seller_id, product_id, quantity, price)
-        values (seller_id, product_id, quantity, price);
+        values (sellerId, productId, quant, pr);
     return 0;
 exception
     when others then
@@ -133,16 +152,15 @@ begin
     if satis < 1 then
         raise exception 'LOCATION OCCUPIED --> %', loc
             using HINT = 'Please try another location';
-    end if;
-    
-    update
-        location
-    set
-        seller_id = next_sid
-    where
-        id = loc
-        and seller_id is null;
-    return 0;
+        end if;
+        update
+            location
+        set
+            seller_id = next_sid
+        where
+            id = loc
+            and seller_id is null;
+        return 0;
 exception
     when others then
         perform
@@ -154,8 +172,8 @@ $$
 language 'plpgsql';
 
 
-/* removing entities */
-create or replace function remove_user (seller_id int)
+/* ==removing entities== */
+create or replace function remove_user (sellerId int)
     returns int
     as $$
 begin
@@ -165,15 +183,15 @@ begin
     set
         seller_id = null
     where
-        l.seller_id = seller_id;
+        l.seller_id = sellerId;
 
     /* remove user */
     delete from market_user m
-    where m.seller_id = seller_id;
+    where m.seller_id = sellerId;
 
     /* remove seller */
     delete from seller s
-    where s.id = seller_id;
+    where s.id = sellerId;
     return 0;
 exception
     when others then
@@ -183,9 +201,24 @@ end;
 $$
 language 'plpgsql';
 
+create or replace function remove_stock (sellerId int, productId int)
+    returns int
+    as $$
+begin
+    delete from stock s
+    where s.seller_id = sellerId
+        and s.product_id = productId;
+exception
+    when others then
+        return - 1;
+end;
 
-/* listing */
-create or replace function list_products_not_in_stock (seller_id int)
+$$
+language 'plpgsql';
+
+
+/* ==listing== */
+create or replace function list_products_not_in_stock (sellerId int)
     returns table (
         product_id int,
         product_name varchar(200)
@@ -199,7 +232,7 @@ begin
             product
         except
         select
-            product_id
+            stock.product_id
         from
             stock
 )
@@ -212,6 +245,241 @@ begin
     where
         not_taken.id = p.id;
 end;
+$$
+language 'plpgsql';
+
+create or replace function list_sellers ()
+    returns table (
+        sellerid int,
+        fname varchar(200),
+        lname varchar(200),
+        loc int
+    )
+    as $$
+begin
+    return query
+    select
+        sl.sellerid,
+        sl.fname,
+        sl.lname,
+        sl.loc
+    from
+        sellers_loc sl;
+end;
+$$
+language 'plpgsql';
+
+create or replace function list_available_loc ()
+    returns table (
+        loc int
+    )
+    as $$
+begin
+    return query
+    select
+        id
+    from
+        location
+    where
+        location.seller_id is null;
+end;
+$$
+language 'plpgsql';
+
+create or replace function list_sales_usr (sellerId int, starting date, ending date)
+    returns table (
+        productid int,
+        quantity int
+    )
+    as $$
+begin
+    return query
+    select
+        sale.product_id,
+        sum(sale.quantity)::int
+    from
+        sale
+    where
+        sale.seller_id = sellerId
+        and sale.sale_date >= starting
+        and sale.sale_date <= ending
+    group by
+        sale.product_id
+    having
+        sum(sale.quantity) > 0;
+end;
+$$
+language 'plpgsql';
+
+create or replace function list_stock (sellerId int)
+    returns table (
+        productid int,
+        quantity int,
+        price real
+    )
+    as $$
+begin
+    return query
+    select
+        stock.product_id,
+        stock.quantity,
+        stock.price
+    from
+        stock
+    where
+        stock.seller_id = sellerId;
+end;
+$$
+language 'plpgsql';
+
+create or replace function list_all_products (sellerId int)
+    returns table (
+        productid int,
+        productname varchar(200)
+    )
+    as $$
+begin
+    return query
+    select
+        p.id,
+        p.product_name
+    from
+        product p,
+        stock s
+    where
+        s.product_id = p.id
+        and s.seller_id = sellerId;
+end;
+$$
+language 'plpgsql';
+
+create or replace function list_product_stocks (productId int)
+    returns table (
+        sellername varchar(200),
+        loc int,
+        quantity int,
+        price real
+    )
+    as $$
+begin
+    return query
+    select
+        s.seller_name,
+        l.id,
+        st.quantity,
+        st.price
+    from
+        stock st,
+        seller s,
+        location l
+    where
+        st.seller_id = s.id
+        and l.seller_id = s.id
+        and st.quantity > 0;
+end;
+$$
+language 'plpgsql';
+
+
+/* ==routines== */
+create or replace function mylogin (username varchar(200), password varchar(200))
+    returns int
+    as $$
+declare
+    sellerid bigint;
+begin
+    sellerid := (
+        select
+            seller.id
+        from
+            market_user,
+            seller
+        where
+            market_user.seller_id = seller.id
+            and market_user.id = username
+            and market_user.password = password);
+    if sellerid is null then
+        return - 1;
+    end if;
+    return sellerid;
+exception
+    when others then
+        return - 1;
+end;
+
+$$
+language 'plpgsql';
+
+create or replace function update_quantity (sellerId int, productId int, quantityChange int)
+    returns int
+    as $$
+declare
+    curr_quantity int;
+begin
+    curr_quantity := (
+        select
+            quantity
+        from
+            stock
+        where
+            stock.seller_id = sellerId
+            and stock.product_id = productId);
+    curr_quantity := curr_quantity + quantityChange;
+    if curr_quantity is null or curr_quantity < 0 then
+        return - 1;
+    end if;
+    update
+        stock
+    set
+        stock.quantity = curr_quantity
+    where
+        stock.seller_id = sellerId
+        and stock.product_id = productId;
+    return 0;
+exception
+    when others then
+        return - 1;
+end;
+
+$$
+language 'plpgsql';
+
+create or replace function sell (sellerId int, productId int, q int)
+    returns int
+    as $$
+declare
+    curr_quantity int;
+    curr_date date;
+begin
+    curr_quantity := (
+        select
+            quantity
+        from
+            stock
+        where
+            stock.seller_id = sellerId
+            and stock.product_id = productId);
+    curr_quantity := curr_quantity - q;
+    if curr_quantity is null or curr_quantity < 0 then
+        raise notice 'no sufficent quantity or seller does not sell product';
+        return - 1;
+    end if;
+    update
+        stock
+    set
+        quantity = curr_quantity
+    where
+        stock.seller_id = sellerId
+        and stock.product_id = productId;
+    curr_date := current_date;
+    insert into sale (id, seller_id, product_id, quantity, sale_date)
+        values (nextval('saleid_seq'), sellerId, productId, q, curr_date);
+    return 0;
+exception
+    when others then
+        return - 1;
+end;
+
 $$
 language 'plpgsql';
 
