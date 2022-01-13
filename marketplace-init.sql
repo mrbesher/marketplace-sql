@@ -3,6 +3,9 @@ create or replace function is_occupied_proc ()
     returns trigger
     as $$
 begin
+    if new.seller_id is null then
+        return new;
+    end if;
     if old.seller_id is not null then
         raise exception 'location is already occupied';
         return old;
@@ -29,13 +32,9 @@ language 'plpgsql';
 
 
 /* TRIGGERS */
-create or replace trigger is_occupied
-    before update on location for each row
-    execute procedure is_occupied_proc ();
+create or replace trigger is_occupied before update on location for each row execute procedure is_occupied_proc ();
 
-create or replace trigger pos_quantity
-    before update on stock for each row
-    execute procedure pos_quantity_proc ();
+create or replace trigger pos_quantity before update on stock for each row execute procedure pos_quantity_proc ();
 
 
 /* TYPES - RECORDS */
@@ -112,7 +111,8 @@ create or replace function init_locations (n int)
     returns void
     as $$
 declare
-    loc_cur cursor for
+    v_msg text;
+    declare loc_cur cursor for
         select
             *
         from
@@ -124,7 +124,9 @@ begin
     end loop;
     exception
         when others then
-            return;
+            get stacked diagnostics v_msg = message_text;
+    raise notice E'%', v_msg;
+    return;
     end;
 
 $$
@@ -155,6 +157,7 @@ where
 create or replace function add_product (name varchar(200), out productId int)
 as $$
 declare
+    v_msg text;
     next_pid int;
 begin
     next_pid := nextval('productid_seq');
@@ -163,8 +166,10 @@ begin
     productId := next_pid;
 exception
     when others then
-        perform
-            setval('productid_seq', next_pid, false);
+        get stacked diagnostics v_msg = message_text;
+    raise notice E'%', v_msg;
+    perform
+        setval('productid_seq', next_pid, false);
     productId := - 1;
 end;
 
@@ -174,13 +179,17 @@ language 'plpgsql';
 create or replace function add_stock (sellerId int, productId int, quant int, pr real)
     returns int
     as $$
+declare
+    v_msg text;
 begin
     insert into stock (seller_id, product_id, quantity, price)
         values (sellerId, productId, quant, pr);
     return 0;
 exception
     when others then
-        return - 1;
+        get stacked diagnostics v_msg = message_text;
+    raise notice E'%', v_msg;
+    return - 1;
 end;
 
 $$
@@ -190,6 +199,7 @@ create or replace function add_user (username varchar(200), password varchar(200
     returns int
     as $$
 declare
+    v_msg text;
     stand standrecord;
 begin
     stand.new_stand := nextval('sellerid_seq');
@@ -221,8 +231,10 @@ begin
         return 0;
 exception
     when others then
-        perform
-            setval('sellerid_seq', stand.new_stand, false);
+        get stacked diagnostics v_msg = message_text;
+    raise notice E'%', v_msg;
+    perform
+        setval('sellerid_seq', stand.new_stand, false);
     return - 1;
 end;
 
@@ -234,6 +246,8 @@ language 'plpgsql';
 create or replace function remove_user (sellerId int)
     returns int
     as $$
+declare
+    v_msg text;
 begin
     /* remove location referencing user */
     update
@@ -253,7 +267,9 @@ begin
     return 0;
 exception
     when others then
-        return - 1;
+        get stacked diagnostics v_msg = message_text;
+    raise notice E'%', v_msg;
+    return - 1;
 end;
 
 $$
@@ -262,13 +278,17 @@ language 'plpgsql';
 create or replace function remove_stock (sellerId int, productId int)
     returns int
     as $$
+declare
+    v_msg text;
 begin
     delete from stock s
     where s.seller_id = sellerId
         and s.product_id = productId;
 exception
     when others then
-        return - 1;
+        get stacked diagnostics v_msg = message_text;
+    raise notice E'%', v_msg;
+    return - 1;
 end;
 
 $$
@@ -440,10 +460,11 @@ language 'plpgsql';
 
 
 /* ==routines== */
-create or replace function mylogin (username varchar(200), password varchar(200))
+create or replace function mylogin (username varchar(200), pass varchar(200))
     returns int
     as $$
 declare
+    v_msg text;
     sellerid bigint;
 begin
     sellerid := (
@@ -455,14 +476,16 @@ begin
         where
             market_user.seller_id = seller.id
             and market_user.id = username
-            and market_user.password = password);
+            and market_user.password = pass);
     if sellerid is null then
         return - 1;
     end if;
     return sellerid;
 exception
     when others then
-        return - 1;
+        get stacked diagnostics v_msg = message_text;
+    raise notice E'%', v_msg;
+    return - 1;
 end;
 
 $$
@@ -472,6 +495,7 @@ create or replace function update_quantity (sellerId int, productId int, quantit
     returns int
     as $$
 declare
+    v_msg text;
     curr_quantity int;
 begin
     curr_quantity := (
@@ -496,7 +520,9 @@ begin
     return 0;
 exception
     when others then
-        return - 1;
+        get stacked diagnostics v_msg = message_text;
+    raise notice E'%', v_msg;
+    return - 1;
 end;
 
 $$
@@ -506,6 +532,7 @@ create or replace function sell (sellerId int, productId int, q int)
     returns int
     as $$
 declare
+    v_msg text;
     curr_quantity int;
     curr_date date;
 begin
@@ -535,7 +562,9 @@ begin
     return 0;
 exception
     when others then
-        return - 1;
+        get stacked diagnostics v_msg = message_text;
+    raise notice E'%', v_msg;
+    return - 1;
 end;
 
 $$
