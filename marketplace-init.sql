@@ -1,42 +1,3 @@
-/* TRIGGER PROCs */
-create or replace function is_occupied_proc ()
-    returns trigger
-    as $$
-begin
-    if new.seller_id is null then
-        return new;
-    end if;
-    if old.seller_id is not null then
-        raise exception 'location is already occupied';
-        return old;
-    else
-        return new;
-    end if;
-end;
-$$
-language 'plpgsql';
-
-create or replace function pos_quantity_proc ()
-    returns trigger
-    as $$
-begin
-    if old.quantity < 0 then
-        raise exception 'quantity cannot be negative';
-        return old;
-    else
-        return new;
-    end if;
-end;
-$$
-language 'plpgsql';
-
-
-/* TRIGGERS */
-create or replace trigger is_occupied before update on location for each row execute procedure is_occupied_proc ();
-
-create or replace trigger pos_quantity before update on stock for each row execute procedure pos_quantity_proc ();
-
-
 /* TYPES - RECORDS */
 do $$
 begin
@@ -106,6 +67,45 @@ create table if not exists market_user (
 );
 
 
+/* TRIGGER PROCs */
+create or replace function is_occupied_proc ()
+    returns trigger
+    as $$
+begin
+    if new.seller_id is null then
+        return new;
+    end if;
+    if old.seller_id is not null then
+        raise exception 'location is already occupied';
+        return old;
+    else
+        return new;
+    end if;
+end;
+$$
+language 'plpgsql';
+
+create or replace function pos_quantity_proc ()
+    returns trigger
+    as $$
+begin
+    if old.quantity < 0 then
+        raise exception 'quantity cannot be negative';
+        return old;
+    else
+        return new;
+    end if;
+end;
+$$
+language 'plpgsql';
+
+
+/* TRIGGERS */
+create or replace trigger is_occupied before update on location for each row execute procedure is_occupied_proc ();
+
+create or replace trigger pos_quantity before update on stock for each row execute procedure pos_quantity_proc ();
+
+
 /* SET n LOCATIONS WITH THEIR IDS */
 create or replace function init_locations (n int)
     returns void
@@ -122,12 +122,12 @@ begin
         insert into location (id, seller_id)
             values (loc.generate_series, null);
     end loop;
-    exception
-        when others then
-            get stacked diagnostics v_msg = message_text;
+exception
+    when others then
+        get stacked diagnostics v_msg = message_text;
     raise notice E'%', v_msg;
     return;
-    end;
+end;
 
 $$
 language 'plpgsql';
@@ -199,8 +199,8 @@ create or replace function add_user (username varchar(200), password varchar(200
     returns int
     as $$
 declare
-    v_msg text;
     stand standrecord;
+    v_msg text;
 begin
     stand.new_stand := nextval('sellerid_seq');
     insert into seller (id, seller_name, seller_surname)
@@ -284,6 +284,7 @@ begin
     delete from stock s
     where s.seller_id = sellerId
         and s.product_id = productId;
+    return 0;
 exception
     when others then
         get stacked diagnostics v_msg = message_text;
@@ -313,6 +314,8 @@ begin
             stock.product_id
         from
             stock
+        where
+            stock.seller_id = sellerId
 )
     select
         p.id,
@@ -389,9 +392,36 @@ end;
 $$
 language 'plpgsql';
 
+create or replace function list_all_sales (starting date, ending date)
+    returns table (
+        productid int,
+        sellernumber int,
+        quantity int
+    )
+    as $$
+begin
+    return query
+    select
+        count(distinct sale.seller_id)::int,
+        sale.product_id,
+        sum(sale.quantity)::int
+    from
+        sale
+    where
+        sale.sale_date >= starting
+        and sale.sale_date <= ending
+    group by
+        sale.product_id
+    having
+        sum(sale.quantity) > 0;
+end;
+$$
+language 'plpgsql';
+
 create or replace function list_stock (sellerId int)
     returns table (
         productid int,
+        productname varchar(200),
         quantity int,
         price real
     )
@@ -400,17 +430,20 @@ begin
     return query
     select
         stock.product_id,
+        product.product_name,
         stock.quantity,
         stock.price
     from
-        stock
+        stock,
+        product
     where
-        stock.seller_id = sellerId;
+        stock.seller_id = sellerId
+        and product.id = stock.product_id;
 end;
 $$
 language 'plpgsql';
 
-create or replace function list_all_products (sellerId int)
+create or replace function list_all_products ()
     returns table (
         productid int,
         productname varchar(200)
@@ -422,11 +455,26 @@ begin
         p.id,
         p.product_name
     from
-        product p,
-        stock s
+        product p;
+end;
+$$
+language 'plpgsql';
+
+create or replace function list_one_product (pid int)
+    returns varchar (
+        200
+)
+    as $$
+declare
+    product varchar(200);
+begin
+    select
+        p.product_name into product
+    from
+        product p
     where
-        s.product_id = p.id
-        and s.seller_id = sellerId;
+        p.id = pid;
+    return product;
 end;
 $$
 language 'plpgsql';
@@ -453,6 +501,7 @@ begin
     where
         st.seller_id = s.id
         and l.seller_id = s.id
+        and st.product_id = productId
         and st.quantity > 0;
 end;
 $$
@@ -495,8 +544,8 @@ create or replace function update_quantity (sellerId int, productId int, quantit
     returns int
     as $$
 declare
-    v_msg text;
     curr_quantity int;
+    v_msg text;
 begin
     curr_quantity := (
         select
@@ -513,7 +562,7 @@ begin
     update
         stock
     set
-        stock.quantity = curr_quantity
+        quantity = curr_quantity
     where
         stock.seller_id = sellerId
         and stock.product_id = productId;
@@ -569,4 +618,54 @@ end;
 
 $$
 language 'plpgsql';
+
+
+/* ROLES */
+do $do$
+begin
+    if not exists (
+        select
+        from
+            pg_catalog.pg_roles
+        where
+            rolname = 'seller') then
+    create role seller login password 'XtremelySaf3Pa5sworDs3LLer';
+end if;
+end
+$do$;
+
+do $do$
+begin
+    if not exists (
+        select
+        from
+            pg_catalog.pg_roles
+        where
+            rolname = 'viewer') then
+    create role viewer login password 'typica1PassWorD';
+end if;
+end
+$do$;
+
+
+/* SELLER PERMISSIONS */
+grant usage on schema public to seller;
+
+grant select on product, location, stock, sale to seller;
+
+grant insert on sale, product, stock to seller;
+
+grant update on stock to seller;
+
+grant delete on stock to seller;
+
+grant execute on function list_available_loc, list_products_not_in_stock, list_sales_usr, list_stock, list_one_product, update_quantity, sell, add_product, add_stock, remove_stock to seller;
+
+
+/* VIEWER PERMISSIONS */
+grant usage on schema public to viewer;
+
+grant select on stock, seller, location, product to viewer;
+
+grant execute on function list_all_products, list_product_stocks to viewer;
 
